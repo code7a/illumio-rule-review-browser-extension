@@ -1,6 +1,23 @@
 (() => {
   'use strict';
 
+  // Prevent duplicate initialization in the same document/frame
+  if (window.__RR_CS_LOADED__) { /* return; */ }
+  window.__RR_CS_LOADED__ = true;
+
+  function markOnceBody(flag) {
+    const key = `data-rr-${flag}`;
+    if (document.body.hasAttribute(key)) return false;
+    document.body.setAttribute(key, "1");
+    return true;
+  }
+
+  // Before calling toolbar ensure functions the first time:
+  if (markOnceBody("toolbars-initialized")) {
+    ensureRulesetToolReviewButton();
+    ensurePolicyListReviewButton();
+  }
+
   /******************************************************************
    * Runtime config
    ******************************************************************/
