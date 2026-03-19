@@ -12,10 +12,10 @@
     return true;
   }
 
-  // Before calling toolbar ensure functions the first time:
+  // Defer first ensure pass so all const/let declarations are initialized (TDZ-safe).
   if (markOnceBody("toolbars-initialized")) {
-    ensureRulesetToolReviewButton();
-    ensurePolicyListReviewButton();
+    // scheduleEnsureAll is declared later; using a next-tick avoids TDZ on consts.
+    setTimeout(() => scheduleEnsureAll(0), 0);
   }
 
   /******************************************************************
