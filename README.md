@@ -125,7 +125,6 @@ If you find this useful, you can:
 - **Submit a Pull Request** — documentation improvements, small fixes, and refactors are all welcome.
 
 Thanks for helping make this better!
-``
 
 ---
 
