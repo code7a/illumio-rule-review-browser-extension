@@ -104,6 +104,31 @@ Logs are emitted as **JSON objects with a single key** (label) and an object pay
 
 ---
 
+## Feedback & Contributing
+
+We’d love your feedback, ideas, and contributions — even small ones help.
+
+### 💬 Give Feedback or Ask Questions
+- **Open a GitHub Issue** (label it `feedback`) for bugs, suggestions, or feature requests.
+- **Start a GitHub Discussion** for praise, questions, ideas, or general conversation.
+- **Leave a comment** on an existing Issue or Pull Request.
+- **Email us directly** at  
+  📧 rule-review-browser-e-aaaatq5hbbbgmfbfpeslxgaccq@illumio.slack.com
+
+### ⭐ Show Support
+If you find this useful, you can:
+- **Star the repo** (primary “like” signal).
+- **Watch the repo** to follow updates.
+- **Fork the repo** if you plan to build on it or experiment.
+
+### 🛠️ Contribute
+- **Submit a Pull Request** — documentation improvements, small fixes, and refactors are all welcome.
+
+Thanks for helping make this better!
+``
+
+---
+
 ## ⚠️ Limitations & Disclaimer
 
 - **BETA SOFTWARE** — behavior may change without notice
