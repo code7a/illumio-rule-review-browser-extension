@@ -99,7 +99,8 @@ Logs are emitted as **JSON objects with a single key** (label) and an object pay
 ```json
 {"dom_rule_snapshot":{"ruleset_id":"123","rule_number":"42", "...": "..."}}
 {"async_query_poll":{"status":"completed","href":"..."}}
-{"disable_rule_put":{"attempt":"minimal","ok":true,"status":200,"href":"..."}}```
+{"disable_rule_put":{"attempt":"minimal","ok":true,"status":200,"href":"..."}}
+```
 
 ---
 
