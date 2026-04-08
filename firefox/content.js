@@ -1,6 +1,21 @@
 (() => {
   'use strict';
 
+  // Cross-browser shim: `browser` (Firefox, Promise-based) vs `chrome` (Chromium).
+  // For sendMessage we always use browser.runtime.sendMessage when available,
+  // because Firefox's `chrome` alias does NOT return a Promise for this call.
+  const _chrome = (typeof browser !== 'undefined') ? browser : chrome;
+
+  // SVG <use> href helper — Firefox requires the XLink namespace for xlink:href;
+  // plain setAttribute('xlink:href') silently fails. Setting both the modern
+  // unprefixed href (SVG2) and the namespaced version covers all browsers.
+  const XLINK_NS = 'http://www.w3.org/1999/xlink';
+  function setSvgUseHref(useEl, value) {
+    if (!useEl) return;
+    useEl.setAttribute('href', value);
+    useEl.setAttributeNS(XLINK_NS, 'href', value);
+  }
+
   /******************************************************************
    * Runtime config
    ******************************************************************/
@@ -128,14 +143,15 @@
   const EXPORT_MENU_SEL         = 'nav[data-tid="comp-menu comp-menu-generate-report"]';
   const TOOLGROUP_MENU_SEL      = 'nav[data-tid="comp-menu comp-menu-ruleset-actions"]';
 
-  // --- CSS shim for per-row button ---
-  const CSS_BTN = `
-    .rr-btn{display:inline-flex;align-items:center;justify-content:center;height:28px;width:28px;border-radius:6px;border:1px solid #d1d5db;background:#fff;color:#111;cursor:pointer;margin-left:6px;padding:0;line-height:1}
-    .rr-btn:hover{background:#f9fafb}
-  `;
-  function ensureCssOnce(){
-    if (document.getElementById('__rr_min_css__')) return;
-    const s = document.createElement('style'); s.id='__rr_min_css__'; s.textContent = CSS_BTN; document.head?.appendChild(s);
+  // --- Inline style helpers for per-row button ---
+  // No <style> is injected into document.head — Firefox marks content-script
+  // stylesheets as cross-origin, causing the Illumio app's own CSSStyleSheet.rules
+  // iteration to throw a DOMException. Inline styles + JS hover avoid this entirely.
+  const RR_BTN_BASE = 'display:inline-flex;align-items:center;justify-content:center;height:28px;width:28px;border-radius:6px;border:1px solid #d1d5db;background:#fff;color:#111;cursor:pointer;margin-left:6px;padding:0;line-height:1';
+  function applyRRBtnStyle(btn){
+    btn.style.cssText = RR_BTN_BASE;
+    btn.addEventListener('mouseenter', () => { btn.style.background = '#f9fafb'; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = '#fff'; });
   }
   function hasRRButton(container){ return !!container.querySelector('button[data-rr="1"]'); }
 
@@ -293,7 +309,7 @@
   async function getOrgIdFromBackground(retries=20, delayMs=250){
     for (let i=0;i<retries;i++){
       try{
-        const resp = await chrome.runtime.sendMessage({ type:'GET_ORG_ID' });
+        const resp = await _chrome.runtime.sendMessage({ type:'GET_ORG_ID' });
         const id = resp?.orgId ? String(resp.orgId) : null;
         if (id) return id;
       }catch{}
@@ -345,16 +361,52 @@
     const to    = Number.isFinite(sp?.to_port)? sp.to_port : '';
     return `${proto}|${port}|${to}`;
   }
+  // Proto name/number helpers used by parseServicePillText
+  const PROTO_NAME_TO_NUM = { tcp:6, udp:17, icmp:1, icmpv6:58, sctp:132, gre:47, esp:50, ah:51 };
+  function protoStrToNum(s){ const n=Number(s); if (Number.isFinite(n)) return n; return PROTO_NAME_TO_NUM[String(s).toLowerCase().trim()] ?? null; }
+
   function parseServicePillText(text){
     if (!text) return [];
     const out = [];
-    const tl = String(text).trim().toLowerCase();
-    let m = tl.match(/^(\d+)\s*-\s*(\d+)\s*(tcp|udp)\b/);
-    if (m){ const p1=+m[1], p2=+m[2], proto=(m[3]==='tcp'?6:17); if (!isNaN(p1)&&!isNaN(p2)&&p2>=p1) out.push({proto,port:p1,to_port:p2}); }
-    m = tl.match(/^(\d+)\s*(tcp|udp)\b/);
-    if (m){ const port=+m[1], proto=(m[2]==='tcp'?6:17); if (!isNaN(port)) out.push({proto,port}); }
-    m = tl.match(/^(tcp|udp)\b/);
-    if (m){ const proto=(m[1]==='tcp'?6:17); out.push({proto}); }
+    const tl = String(text).trim().toLowerCase().replace(/\s+/g,' ');
+
+    // Illumio UI can render service pills in many formats, e.g.:
+    //   "5000 UDP"  "UDP 5000"  "5000-6000 TCP"  "TCP/5000"  "5000/UDP"  "17/5000"  "UDP"
+    // All patterns below normalise to {proto, port?, to_port?}
+
+    // range + proto:  "5000-6000 UDP"  "UDP 5000-6000"  "5000-6000/UDP"
+    let m = tl.match(/^(\d+)\s*[-–]\s*(\d+)\s*[/\s]\s*(tcp|udp|icmp|sctp|\d+)\b/) ||
+             tl.match(/^(tcp|udp|icmp|sctp|\d+)[/\s]\s*(\d+)\s*[-–]\s*(\d+)\b/);
+    if (m && m.length===4){
+      // figure out which capture is the proto and which are ports
+      const protoFirst = isNaN(+m[1]);
+      const [pa, pb, pc] = [m[1], m[2], m[3]];
+      if (protoFirst){
+        const proto=protoStrToNum(pa), p1=+pb, p2=+pc;
+        if (proto!==null&&!isNaN(p1)&&!isNaN(p2)&&p2>=p1) out.push({proto,port:p1,to_port:p2});
+      } else {
+        const p1=+pa, p2=+pb, proto=protoStrToNum(pc);
+        if (proto!==null&&!isNaN(p1)&&!isNaN(p2)&&p2>=p1) out.push({proto,port:p1,to_port:p2});
+      }
+    }
+    // single port + proto: "5000 UDP" | "UDP 5000" | "5000/UDP" | "UDP/5000" | "17/5000" | "5000/17"
+    if (!out.length){
+      m = tl.match(/^(\d+)[/\s]\s*(tcp|udp|icmp|sctp|icmpv6|\d+)\b/) ||
+          tl.match(/^(tcp|udp|icmp|sctp|icmpv6)[/\s]\s*(\d+)\b/);
+      if (m){
+        const [a, b] = [m[1], m[2]];
+        const aIsProto = isNaN(+a);
+        const proto = aIsProto ? protoStrToNum(a) : protoStrToNum(b);
+        const port  = aIsProto ? +b : +a;
+        if (proto!==null && !isNaN(port)) out.push({proto, port});
+      }
+    }
+    // proto only: "UDP" | "TCP" | "ICMP"
+    if (!out.length){
+      m = tl.match(/^(tcp|udp|icmp|icmpv6|sctp|gre|esp|ah)\b/);
+      if (m){ const proto=protoStrToNum(m[1]); if (proto!==null) out.push({proto}); }
+    }
+
     const seen = new Set(), dedup=[];
     for (const it of out){
       const key = `${Number.isFinite(it.proto)?it.proto:''}|${Number.isFinite(it.port)?it.port:''}|${Number.isFinite(it.to_port)?it.to_port:''}`;
@@ -477,7 +529,13 @@
   }
   function buildRowServiceSignature(servicePills){
     const ports=[], ids = idsFromServicePills(servicePills);
-    for (const pill of servicePills) parseServicePillText(pill.text).forEach(pp=>ports.push(servicePortsToKey(pp)));
+    const parseLog=[];
+    for (const pill of servicePills){
+      const parsed = parseServicePillText(pill.text);
+      parsed.forEach(pp=>ports.push(servicePortsToKey(pp)));
+      parseLog.push({ text:pill.text, href:pill.href||null, parsed });
+    }
+    logInfo('[RR] svc_pill_parse', parseLog);
     return { ports:new Set(ports), ids:new Set(ids) };
   }
   function idsFromServicePills(pills=[]){ return (pills||[]).map(p=>extractServiceIdFromHref(p.href)).filter(Boolean); }
@@ -813,14 +871,25 @@
     const rowConsAll  = isEffectiveAll(consumersArg.effective);
     const rowProvAll  = isEffectiveAll(providersArg.effective);
     const rowSvcSig   = buildRowServiceSignature(servicePills);
+    logInfo('[RR] match_input',{
+      row_consumers:rowConsKeys, row_consumers_all:rowConsAll,
+      row_providers:rowProvKeys, row_providers_all:rowProvAll,
+      row_svc_ports:[...( rowSvcSig?.ports||[])], row_svc_ids:[...(rowSvcSig?.ids||[])]
+    });
     let best=null;
+    const allScores=[];
     for (const r of rules){
       const { score } = scoreRuleMatch(rowConsKeys,rowConsAll,rowProvKeys,rowProvAll,rowSvcSig,r);
+      const apiConsKeys=[...(new Set((r.consumers||[]).map(c=>keyFromApiConsumer(c)).filter(Boolean)))];
+      const apiProvKeys=[...(new Set((r.providers||[]).map(p=>keyFromApiProvider(p)).filter(Boolean)))];
+      allScores.push({rule_id:r.id, rule_number:r.rule_number, enabled:r.enabled, score,
+        api_consumers:apiConsKeys, api_providers:apiProvKeys, unscoped_consumers:!!r.unscoped_consumers});
       if (score>=5){ if (!best || score>best.score) best={ rule:r, score }; }
     }
+    logInfo('[RR] match_all_scores', allScores);
     if (best){ const href = best.rule?.href || `/orgs/${orgId}/sec_policy/draft/rule_sets/${rulesetId}/sec_rules/${best.rule.id}`;
-               logInfo('match_rule_pick',{rule_id:best.rule?.id, rule_number:best.rule?.rule_number, score:best.score}); return href; }
-    logInfo('match_rule_pick',{reason:'no_good_match', candidates:rules.length}); return null;
+               logInfo('[RR] match_winner',{rule_id:best.rule?.id, rule_number:best.rule?.rule_number, score:best.score, href}); return href; }
+    logInfo('[RR] match_winner',{reason:'no_good_match', total_candidates:rules.length}); return null;
   }
   function withTimeout(promise,ms){ let t; const to=new Promise(res=>{ t=setTimeout(()=>res('__TIMEOUT__'),ms); }); return Promise.race([promise,to]).then(r=>{ clearTimeout(t); return r;}); }
   async function disableRuleByMatchingRow(orgId, rulesetId, consumersArg, providersArg, servicePills, hud){
@@ -848,7 +917,7 @@
   }
   async function getDraftRule(orgId, ruleHref){
     const url=normalizeApiHref(ruleHref); const res=await fetch(url,{credentials:'include',headers:{Accept:'application/json'}});
-    const data=await res.json().catch(()=>null); logInfo('disable_rule_get',{ok:res.ok,status:res.status,href:ruleHref}); return { ok:res.ok, status:res.status, data, url };
+    const data=await res.json().catch(()=>null); logInfo('[RR] rule_fetched_for_action',{ok:res.ok,status:res.status,href:ruleHref,rule_number:data?.rule_number,rule_id:data?.href,enabled:data?.enabled,consumers:(data?.consumers||[]).map(c=>keyFromApiConsumer(c)),providers:(data?.providers||[]).map(p=>keyFromApiProvider(p))}); return { ok:res.ok, status:res.status, data, url };
   }
 
   /******************************************************************
@@ -865,7 +934,7 @@
       const { sources, destinations, services } = getRowParts(row);
       const scopeMode = getScopeMode(row);
 
-      logHeavy('dom_rule_snapshot',{ruleset_id:rulesetId, rule_number:rn, scope_mode:scopeMode,
+      logInfo('[RR] clicked_rule_dom',{ruleset_id:rulesetId, rule_number:rn, scope_mode:scopeMode,
         ui_sources:pillListToLog(sources), ui_destinations:pillListToLog(destinations), ui_services:pillListToLog(services)});
 
       const rowSourcePills  = sources.slice();
@@ -904,7 +973,7 @@
 
       const servicesInclude = await buildServicesInclude(rowServicePills, orgId);
 
-      logHeavy('dom_rule_includes',{
+      logInfo('[RR] query_built',{
         ruleset_id:rulesetId, rule_number:rn, scope_mode:scopeMode,
         sources_effective:includeToStrings(sourcesInclude),
         destinations_effective:includeToStrings(destinationsInclude),
@@ -916,6 +985,7 @@
       payload.destinations.include = destinationsInclude;
       payload.services.include     = servicesInclude;
 
+      logInfo('[RR] query_payload', payload);
       const createResp = await submitAsyncTrafficQuery(orgId, payload);
       if (!createResp.ok || !createResp?.data?.href){ hud?.bumpMeter('errors'); return; }
 
@@ -984,11 +1054,12 @@
       const useEl = btn.querySelector('svg use');
       if (useEl){
         const spriteHas=id=>!!document.querySelector(`symbol[id="${id.replace('#','')}"]`);
-        if (spriteHas('#search')) useEl.setAttribute('xlink:href','#search'); else if (spriteHas('#magnifier')) useEl.setAttribute('xlink:href','#magnifier');
+        if (spriteHas('#search')) setSvgUseHref(useEl,'#search'); else if (spriteHas('#magnifier')) setSvgUseHref(useEl,'#magnifier');
       }
     }else{
-      btn = document.createElement('button'); btn.type='button'; btn.className='rr-btn'; btn.setAttribute('data-rr','1');
+      btn = document.createElement('button'); btn.type='button'; btn.setAttribute('data-rr','1');
       btn.setAttribute('title','Review'); btn.setAttribute('aria-label','Review'); btn.textContent='🔍';
+      applyRRBtnStyle(btn);
     }
     btn.addEventListener('click', async (e)=>{
       e.stopPropagation();
@@ -1061,7 +1132,7 @@
     reviewBtn.setAttribute('data-tid', dt.join(' '));
     const useEl = reviewBtn.querySelector('svg use');
     if (useEl){ const spriteHas=id=>!!document.querySelector(`symbol[id="${id.replace('#','')}"]`);
-      if (spriteHas('#search')) useEl.setAttribute('xlink:href','#search'); else if (spriteHas('#magnifier')) useEl.setAttribute('xlink:href','#magnifier'); }
+      if (spriteHas('#search')) setSvgUseHref(useEl,'#search'); else if (spriteHas('#magnifier')) setSvgUseHref(useEl,'#magnifier'); }
     return reviewBtn;
   }
   function addReviewButtonToToolgroup(group){
@@ -1149,7 +1220,7 @@
     reviewBtn.setAttribute('data-tid', dt.join(' '));
     const useEl = reviewBtn.querySelector('svg use');
     if (useEl){ const spriteHas=id=>!!document.querySelector(`symbol[id="${id.replace('#','')}"]`);
-      if (spriteHas('#search')) useEl.setAttribute('xlink:href','#search'); else if (spriteHas('#magnifier')) useEl.setAttribute('xlink:href','#magnifier'); }
+      if (spriteHas('#search')) setSvgUseHref(useEl,'#search'); else if (spriteHas('#magnifier')) setSvgUseHref(useEl,'#magnifier'); }
     return reviewBtn;
   }
   function addReviewButtonToPolicyListToolgroup(group){
@@ -1402,9 +1473,6 @@
    * Bootstrap (TDZ-safe)
    ******************************************************************/
   function init(){
-    // TDZ-safe: defer first CSS ensure so CSS_BTN is guaranteed initialized
-    setTimeout(ensureCssOnce, 0);
-
     scheduleEnsureAll(0);
 
     const docObs = new MutationObserver(()=>scheduleEnsureAll(200));
