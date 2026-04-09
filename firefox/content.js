@@ -99,7 +99,8 @@
         const wrap = shadow.querySelector('.steps');
         const row  = document.createElement('div');
         row.className = 'step';
-        row.innerHTML = `<div class="ico">⏳</div><div>${label}</div>`;
+        row.innerHTML = `<div class="ico">⏳</div><div class="label"></div>`;
+        row.querySelector('.label').textContent = label ?? '';
         wrap.appendChild(row);
         wrap.scrollTop = wrap.scrollHeight;
         return row;

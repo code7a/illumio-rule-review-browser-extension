@@ -4,8 +4,11 @@
   "version": "0.5.0",
   "browser_specific_settings": {
     "gecko": {
-      "id": "illumio-rule-review@extension",
-      "strict_min_version": "109.0"
+      "id": "click.serviceslab@illumio-rule-review-browser-extension",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   },
   "permissions": ["webRequest", "webNavigation", "scripting", "storage"],
