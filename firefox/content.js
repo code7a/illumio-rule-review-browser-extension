@@ -10,11 +10,31 @@
   // plain setAttribute('xlink:href') silently fails. Setting both the modern
   // unprefixed href (SVG2) and the namespaced version covers all browsers.
   const XLINK_NS = 'http://www.w3.org/1999/xlink';
+
+  let CACHED_API_BASE = null;
+
+  async function getApiBaseFromBackground() {
+    if (CACHED_API_BASE) return CACHED_API_BASE;
+    try {
+      const resp = await _chrome.runtime.sendMessage({ type: 'GET_API_BASE' });
+      if (resp?.apiBase) {
+        CACHED_API_BASE = resp.apiBase;
+        return resp.apiBase;
+      }
+    } catch (_) {}
+    // Legacy SCP + on‑prem fallback
+    return location.origin;
+  }
+
   function setSvgUseHref(useEl, value) {
     if (!useEl) return;
     useEl.setAttribute('href', value);
     useEl.setAttributeNS(XLINK_NS, 'href', value);
   }
+
+  window.addEventListener('hashchange', () => {
+    CACHED_API_BASE = null;
+  });
 
   /******************************************************************
    * Runtime config
@@ -343,7 +363,7 @@
   }
   async function fetchServicePortsActive(orgId, serviceId){
     if (servicePortsCache.has(serviceId)) return servicePortsCache.get(serviceId);
-    const url = `${location.origin}/api/v2/orgs/${orgId}/sec_policy/active/services/${serviceId}`;
+    const url = `${await getApiBaseFromBackground()}/api/v2/orgs/${orgId}/sec_policy/active/services/${serviceId}`;
     const res = await fetch(url, { credentials:'include', headers:{Accept:'application/json'} });
     if (!res.ok) throw new Error(`GET ${url} HTTP ${res.status}`);
     const json = await res.json();
@@ -436,7 +456,7 @@
    * Ruleset draft fetchers
    ******************************************************************/
   async function fetchRulesetScopeDraft(orgId, rulesetId){
-    const url = `${location.origin}/api/v2/orgs/${orgId}/sec_policy/draft/rule_sets/${rulesetId}`;
+    const url = `${await getApiBaseFromBackground()}/api/v2/orgs/${orgId}/sec_policy/draft/rule_sets/${rulesetId}`;
     try{
       const res = await fetch(url, { credentials:'include', headers:{Accept:'application/json'} });
       if (!res.ok) return null;
@@ -448,11 +468,11 @@
     }catch{ return null; }
   }
   async function fetchRulesetDraftFull(orgId, rulesetId){
-    const url = `${location.origin}/api/v2/orgs/${orgId}/sec_policy/draft/rule_sets/${rulesetId}`;
+    const url = `${await getApiBaseFromBackground()}/api/v2/orgs/${orgId}/sec_policy/draft/rule_sets/${rulesetId}`;
     try{ const res=await fetch(url,{credentials:'include',headers:{Accept:'application/json'}}); if(!res.ok) return null; return await res.json(); }catch{ return null; }
   }
   async function fetchDraftRules(orgId, rulesetId){
-    const url = `${location.origin}/api/v2/orgs/${orgId}/sec_policy/draft/rule_sets/${rulesetId}/sec_rules`;
+    const url = `${await getApiBaseFromBackground()}/api/v2/orgs/${orgId}/sec_policy/draft/rule_sets/${rulesetId}/sec_rules`;
     const res = await fetch(url, { credentials:'include', headers:{Accept:'application/json'} });
     if (!res.ok){ logInfo('match_rule_lookup',{ok:false,status:res.status}); return []; }
     const list = await res.json().catch(()=>[]);
@@ -615,22 +635,28 @@
    * Async query: submit + poll + (optional) download
    ******************************************************************/
   async function submitAsyncTrafficQuery(orgId, payload){
-    const url = `${location.origin}/api/v2/orgs/${orgId}/traffic_flows/async_queries`;
+    const url = `${await getApiBaseFromBackground()}/api/v2/orgs/${orgId}/traffic_flows/async_queries`;
     const csrf = getCsrfToken(); const headers = { Accept:'application/json','Content-Type':'application/json' }; if (csrf) headers['x-csrf-token']=csrf;
     const res = await fetch(url, { method:'POST', credentials:'include', headers, body: JSON.stringify(payload) });
     if (res.status===406) logInfo('async_query_406_payload_preview', payload);
     const text = await res.text().catch(()=>''), data = text? ( ()=>{ try{return JSON.parse(text);}catch{return text;} })() : null;
     return { ok: res.ok, status: res.status, data };
   }
-  function normalizeApiHref(href){
+  async function normalizeApiHref(href) {
     if (!href) return null;
-    if (href.startsWith('http')) return href;
-    const path = href.startsWith('/api/')? href : `/api/v2${href}`;
-    return `${location.origin}${path}`;
+    // Absolute URLs pass through untouched
+    if (/^https?:\/\//i.test(href)) {
+      return href;
+    }
+    let path = href;
+    if (!path.startsWith('/')) path = `/${path}`;
+    if (!path.startsWith('/api/')) path = `/api/v2${path}`;
+    const base = await getApiBaseFromBackground();
+    return `${base}${path}`;
   }
   function isTerminalStatus(s){ const t=String(s||'').toLowerCase(); return (t==='completed'||t==='failed'||t==='canceled'||t==='timeout'); }
   async function pollAsyncQuery(orgId, href, opts={}, hud){
-    const url = normalizeApiHref(href); if (!url){ logInfo('async_query_poll_error',{error:'invalid_href',href}); return null; }
+    const url = await normalizeApiHref(href); if (!url){ logInfo('async_query_poll_error',{error:'invalid_href',href}); return null; }
     const maxWaitMs = opts.maxWaitMs ?? 15*60*1000, minDelayMs=opts.minDelayMs ?? 750, maxDelayMs=opts.maxDelayMs ?? 5000;
     let delay=minDelayMs, lastStatus=null; const start=Date.now();
     while (Date.now()-start < maxWaitMs){
@@ -648,7 +674,7 @@
   }
   async function downloadAsyncQuery(resultHref){
     try{
-      const url = normalizeApiHref(resultHref);
+      const url = await normalizeApiHref(resultHref);
       const res = await fetch(url,{credentials:'include',headers:{Accept:'application/json, text/csv, text/plain; q=0.8'}});
       if (!res.ok){ logInfo('async_query_download_error',{status:res.status, href:resultHref}); return null; }
       const ct = (res.headers.get('content-type')||'').toLowerCase();
@@ -917,7 +943,7 @@
     }catch(e){ logInfo('disable_rule_exception', String(e?.message||e)); return { success:false }; }
   }
   async function getDraftRule(orgId, ruleHref){
-    const url=normalizeApiHref(ruleHref); const res=await fetch(url,{credentials:'include',headers:{Accept:'application/json'}});
+    const url=await normalizeApiHref(ruleHref); const res=await fetch(url,{credentials:'include',headers:{Accept:'application/json'}});
     const data=await res.json().catch(()=>null); logInfo('[RR] rule_fetched_for_action',{ok:res.ok,status:res.status,href:ruleHref,rule_number:data?.rule_number,rule_id:data?.href,enabled:data?.enabled,consumers:(data?.consumers||[]).map(c=>keyFromApiConsumer(c)),providers:(data?.providers||[]).map(p=>keyFromApiProvider(p))}); return { ok:res.ok, status:res.status, data, url };
   }
 
@@ -1289,7 +1315,7 @@
    ******************************************************************/
   function makeActorsAll(){ return { actors: ACTORS_TOKEN }; }
   async function fetchRulesetsDraftList(orgId, page=1, perPage=500){
-    const url = `${location.origin}/api/v2/orgs/${orgId}/sec_policy/draft/rule_sets?page=${page}&per_page=${perPage}`;
+    const url = `${await getApiBaseFromBackground()}/api/v2/orgs/${orgId}/sec_policy/draft/rule_sets?page=${page}&per_page=${perPage}`;
     const res = await fetch(url,{credentials:'include',headers:{Accept:'application/json'}}); if (!res.ok) return { items:[], total:0 };
     const arr = await res.json().catch(()=>[]); const total = Number(res.headers.get('X-Total-Count')) || (Array.isArray(arr)?arr.length:0);
     return { items:Array.isArray(arr)?arr:[], total };
